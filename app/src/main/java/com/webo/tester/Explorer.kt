@@ -94,6 +94,7 @@ class Explorer(private val svc: TesterService, private val cfg: Cfg) {
     private var homeSig = ""
     private var sinceNew = 0
     private var lastShotT = 0L
+    private var lastPermWindow: String? = null
     private var logW: FileWriter? = null
     private val inputs: List<String> = cfg.urls + listOf(
         "بحث تجريبي",
@@ -362,14 +363,17 @@ class Explorer(private val svc: TesterService, private val cfg: Cfg) {
             return
         }
         if (p.contains("permissioncontroller") || p.contains("packageinstaller")) {
-            val s = shot()
-            val c = clickAny(r, listOf("While using the app", "أثناء استخدام التطبيق", "Only this time",
-                "هذه المرة فقط", "Allow", "السماح"))
-            log("PERM", "نافذة أذونات: «$joined» ← ضغط: ${c ?: "لا شيء، رجوع"}", -1, s)
-            if (c == null) back()
-            sleep(700)
+            // لا نضغط على نوافذ الأذونات تلقائياً — ننتظر ضغطة يدوية من المستخدم.
+            val key = "$p|$joined"
+            if (key != lastPermWindow) {
+                val s = shot()
+                log("PERM", "نافذة أذونات ظهرت: «$joined» — بانتظار ضغطة يدوية منك", -1, s)
+                lastPermWindow = key
+            }
+            sleep(800)
             return
         }
+        lastPermWindow = null
         offApp++
         log("OFFAPP", "نافذة نظام ظهرت ($p): «${joined.take(200)}» ← رجوع")
         back()
