@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>رفع وبناء التطبيق</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --text:#1b1f24; --muted:#5b6470; --accent:#0b6bcb; --ok:#127a3b; --err:#b42318; --line:#d8dce2; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171b; --card:#1d2227; --text:#eceff3; --muted:#9aa4b0; --accent:#4a9cf0; --ok:#4ccb7c; --err:#ff7b6e; --line:#333a42; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text); font:16px/1.6 system-ui, "Segoe UI", Tahoma, sans-serif; }
+  main { max-width:520px; margin:0 auto; }
+  h1 { font-size:22px; margin:8px 0 14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  label { display:block; margin:12px 0 4px; font-weight:600; }
+  input[type=text], input[type=password], input[type=file] { width:100%; padding:12px; font-size:16px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
+  input[dir=ltr] { text-align:left; }
+  button { width:100%; margin-top:16px; padding:14px; font-size:18px; font-weight:700; border:0; border-radius:10px; background:var(--accent); color:#fff; cursor:pointer; }
+  button:disabled { opacity:.55; cursor:default; }
+  .hint { color:var(--muted); font-size:14px; margin-top:6px; }
+  #log { margin-top:14px; white-space:pre-wrap; font-size:15px; overflow-wrap:anywhere; }
+  #log div { padding:3px 0; overflow-wrap:anywhere; word-break:break-all; }
+  .ok { color:var(--ok); } .err { color:var(--err); font-weight:600; }
+  #result a.dl { display:block; margin-top:12px; padding:14px; text-align:center; background:var(--ok); color:#fff; border-radius:10px; font-size:18px; font-weight:700; text-decoration:none; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>رفع التطبيق وبنائه تلقائيًا</h1>
+  <div class="card">
+    <label for="user">اسم حساب GitHub</label>
+    <input id="user" type="text" dir="ltr" autocomplete="off" autocapitalize="off">
+
+    <label for="token">التوكن</label>
+    <input id="token" type="password" dir="ltr" autocomplete="off">
+    <div class="hint">
+      من <a href="https://github.com/settings/tokens/new?scopes=repo,workflow&description=WEBO" target="_blank" rel="noopener">هنا</a>
+      أنشئ توكن واضغط Generate، وسيبه على علامتي <b>repo</b> و<b>workflow</b>. التوكن لا يتخزن ولا يُرسل إلا لـ GitHub.
+    </div>
+
+    <label for="repo">اسم المستودع</label>
+    <input id="repo" type="text" dir="ltr" value="webo" autocomplete="off" autocapitalize="off">
+
+    <label for="zip">ملف الـ zip</label>
+    <input id="zip" type="file" accept=".zip,application/zip">
+
+    <button id="go">رفع وبناء</button>
+    <div id="log" aria-live="polite"></div>
+    <div id="result"></div>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var token = '', user = '', repo = '';
+
+  var WORKFLOW = [
+    "name: Build APK",
+    "on:",
+    "  push:",
+    "  workflow_dispatch:",
+    "permissions:",
+    "  contents: write",
+    "jobs:",
+    "  build:",
+    "    runs-on: ubuntu-24.04",
+    "    steps:",
+    "      - uses: actions/checkout@v4",
+    "      - uses: actions/setup-java@v4",
+    "        with:",
+    "          distribution: temurin",
+    "          java-version: '17'",
+    "      - uses: gradle/actions/setup-gradle@v3",
+    "        with:",
+    "          gradle-version: '8.7'",
+    "      - name: Build",
+    "        run: |",
+    "          set +e",
+    "          gradle assembleDebug --no-daemon --console=plain > build.log 2>&1",
+    "          code=$?",
+    "          if [ $code -ne 0 ]; then",
+    "            msg=$(grep -v '^$' build.log | tail -n 35 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\\n/%0A/g')",
+    "            echo \"::error title=GradleLog::$msg\"",
+    "          fi",
+    "          exit $code",
+    "      - name: Release",
+    "        env:",
+    "          GH_TOKEN: ${{ github.token }}",
+    "        run: gh release create \"v${{ github.run_number }}\" app/build/outputs/apk/debug/app-debug.apk --title \"WEBO\" --notes \"apk\"",
+    ""
+  ].join('\n');
+
+  try {
+    $('user').value = localStorage.getItem('tdl_user') || '';
+    $('repo').value = localStorage.getItem('tdl_repo') || 'webo';
+  } catch (e) {}
+
+  function log(msg, cls) {
+    var d = document.createElement('div');
+    if (cls) d.className = cls;
+    d.textContent = msg;
+    $('log').appendChild(d);
+    d.scrollIntoView({ block: 'nearest' });
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  async function gh(path, method, body) {
+    var r;
+    try {
+      r = await fetch('https://api.github.com' + path, {
+        method: method || 'GET',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Accept': 'application/vnd.github+json',
+          'Content-Type': 'application/json'
+        },
+        body: body ? JSON.stringify(body) : undefined
+      });
+    } catch (e) {
+      throw new Error('تعذر الاتصال بـ GitHub عند الطلب: ' + (method || 'GET') + ' ' + path.split('?')[0] + ' (' + e.message + ')');
+    }
+    var text = await r.text(), j = null;
+    try { j = JSON.parse(text); } catch (e) {}
+    if (!r.ok) {
+      var m = (j && j.message) || text || r.statusText;
+      if (j && j.errors && j.errors.length) {
+        m += ' [' + j.errors.map(function (x) { return x.message || x.code || ''; }).join('; ') + ']';
+      }
+      var err = new Error(r.status + ' - ' + m);
+      err.status = r.status;
+      throw err;
+    }
+    return j;
+  }
+
+  async function readZip(file) {
+    var zip = await JSZip.loadAsync(file);
+    var entries = [];
+    zip.forEach(function (p, f) {
+      if (f.dir) return;
+      if (p.indexOf('__MACOSX/') === 0 || /(^|\/)\.DS_Store$/.test(p)) return;
+      entries.push({ path: p, file: f });
+    });
+    if (!entries.length) throw new Error('الملف المضغوط فاضي');
+    // احذف المجلد الأعلى لو كل الملفات جواه
+    var first = entries[0].path.split('/')[0];
+    var common = entries.every(function (e) { return e.path.indexOf('/') > 0 && e.path.split('/')[0] === first; });
+    if (common) entries.forEach(function (e) { e.path = e.path.slice(first.length + 1); });
+    return entries;
+  }
+
+  async function run() {
+    user = $('user').value.trim();
+    token = $('token').value.trim();
+    repo = $('repo').value.trim();
+    var file = $('zip').files[0];
+    $('log').textContent = ''; $('result').textContent = '';
+    if (!user || !token || !repo || !file) { log('املا كل الخانات واختار الملف', 'err'); return; }
+    if (typeof JSZip === 'undefined') { log('تعذر تحميل مكتبة الـ zip، تأكد من النت وأعد فتح الصفحة', 'err'); return; }
+    try { localStorage.setItem('tdl_user', user); localStorage.setItem('tdl_repo', repo); } catch (e) {}
+
+    $('go').disabled = true;
+    try {
+      log('قراءة الملف...');
+      var entries = await readZip(file);
+      var files = entries.filter(function (e) { return e.path !== '.github/workflows/build.yml'; });
+      log('عدد الملفات: ' + (files.length + 1), 'ok');
+
+      log('إنشاء المستودع...');
+      try {
+        await gh('/user/repos', 'POST', { name: repo, auto_init: true, private: false });
+        log('تم إنشاء المستودع', 'ok');
+      } catch (e) {
+        var exists = false;
+        if (e.status === 422) {
+          try { await gh('/repos/' + user + '/' + repo); exists = true; } catch (e2) {}
+        }
+        if (exists) log('المستودع موجود، هستخدمه', 'ok');
+        else throw e;
+      }
+
+      var base = '/repos/' + user + '/' + repo;
+      var info = await gh(base);
+      var branch = info.default_branch;
+      var ref = null;
+      for (var i = 0; i < 10 && !ref; i++) {
+        try { ref = await gh(base + '/git/ref/heads/' + branch); }
+        catch (e) { if (i === 9) throw e; await sleep(1500); }
+      }
+      var headSha = ref.object.sha;
+      var headCommit = await gh(base + '/git/commits/' + headSha);
+
+      var all = files.map(function (e) { return { path: e.path, file: e.file }; });
+      var tree = new Array(all.length);
+      var total = all.length + 1, done = 0, next = 0;
+      async function worker() {
+        while (next < all.length) {
+          var k = next++;
+          var b64 = await all[k].file.async('base64');
+          var blob = await gh(base + '/git/blobs', 'POST', { content: b64, encoding: 'base64' });
+          tree[k] = { path: all[k].path, mode: '100644', type: 'blob', sha: blob.sha };
+          done++;
+          log('رفع ' + done + '/' + total + ': ' + all[k].path);
+        }
+      }
+      var workers = [];
+      for (var w = 0; w < 6; w++) workers.push(worker());
+      await Promise.all(workers);
+      var wf = await gh(base + '/git/blobs', 'POST', { content: WORKFLOW, encoding: 'utf-8' });
+      tree.push({ path: '.github/workflows/build.yml', mode: '100644', type: 'blob', sha: wf.sha });
+      log('رفع ' + total + '/' + total + ': .github/workflows/build.yml');
+
+      var newTree = await gh(base + '/git/trees', 'POST', { base_tree: headCommit.tree.sha, tree: tree });
+      var commit = await gh(base + '/git/commits', 'POST', { message: 'Add app', tree: newTree.sha, parents: [headSha] });
+      await gh(base + '/git/refs/heads/' + branch, 'PATCH', { sha: commit.sha, force: true });
+      log('تم الرفع. بدأ البناء تلقائيًا...', 'ok');
+
+      var run = null, tries = 0;
+      while (tries < 120) {
+        tries++;
+        await sleep(10000);
+        var runs;
+        try { runs = await gh(base + '/actions/runs?per_page=5&head_sha=' + commit.sha); }
+        catch (ne) { log('انقطع النت لحظة، بحاول تاني...'); continue; }
+        run = runs.workflow_runs && runs.workflow_runs[0];
+        if (!run) { log('في انتظار بدء البناء...'); continue; }
+        if (run.status === 'completed') break;
+        log('جاري البناء... (' + (tries * 10) + ' ثانية)');
+      }
+      if (!run || run.status !== 'completed') throw new Error('البناء طول أكتر من اللازم، افتح تبويب Actions في المستودع');
+      if (run.conclusion !== 'success') {
+        $('result').innerHTML = '<p class="err">فشل البناء.</p><a target="_blank" rel="noopener" href="' + run.html_url + '">افتح تفاصيل الفشل</a>';
+        try {
+          var jobs = await gh(base + '/actions/runs/' + run.id + '/jobs');
+          var job = jobs.jobs[0];
+          var bad = (job.steps || []).filter(function (s) { return s.conclusion === 'failure'; })[0];
+          log('الخطوة اللي فشلت: ' + (bad ? bad.name : 'غير معروفة'), 'err');
+          var lr = await fetch('https://api.github.com' + base + '/actions/jobs/' + job.id + '/logs', {
+            headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' }
+          });
+          if (lr.ok) {
+            var raw = await lr.text();
+            var lines = raw.split('\n').map(function (x) { return x.replace(/^\S+Z\s/, ''); })
+              .filter(function (x) { return x.trim(); });
+            var tail = lines.slice(-40).join('\n');
+            var pre = document.createElement('pre');
+            pre.style.cssText = 'direction:ltr;text-align:left;white-space:pre-wrap;word-break:break-all;font-size:12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:320px;overflow:auto';
+            pre.textContent = tail;
+            var cp = document.createElement('button');
+            cp.textContent = 'نسخ الخطأ';
+            cp.onclick = function () {
+              try { navigator.clipboard.writeText(tail); cp.textContent = 'تم النسخ'; } catch (e3) { cp.textContent = 'انسخه يدويًا'; }
+            };
+            $('result').appendChild(pre);
+            $('result').appendChild(cp);
+          } else {
+            log('تعذر جلب السجل تلقائيًا، افتح رابط التفاصيل', 'err');
+          }
+        } catch (e2) {
+          log('تعذر جلب السجل تلقائيًا، افتح رابط التفاصيل', 'err');
+        }
+        throw new Error('فشل البناء');
+      }
+      var rel = await gh(base + '/releases/latest');
+      var asset = rel.assets && rel.assets[0];
+      if (!asset) throw new Error('البناء نجح لكن الملف لم يظهر بعد، حدّث الصفحة بعد دقيقة');
+      log('تم! التطبيق جاهز', 'ok');
+      var a = document.createElement('a');
+      a.className = 'dl'; a.href = asset.browser_download_url; a.textContent = 'تحميل التطبيق (APK)';
+      $('result').appendChild(a);
+      try { if (window.WeboTester) WeboTester.onBuilt(asset.browser_download_url); } catch (e4) {}
+    } catch (e) {
+      var msg = e.message || String(e);
+      if (/workflow/i.test(msg) && /scope/i.test(msg)) msg += '\nالتوكن ناقصه صلاحية workflow، أنشئ توكن جديد وعلّم عليها.';
+      if (/^401/.test(msg)) msg += '\nالتوكن غلط أو منتهي.';
+      if (/^404/.test(msg)) msg += '\nتأكد من اسم الحساب وصلاحية repo في التوكن.';
+      log('خطأ: ' + msg, 'err');
+    } finally {
+      $('go').disabled = false;
+    }
+  }
+
+  $('go').addEventListener('click', run);
+})();
+</script>
+</body>
+</html>

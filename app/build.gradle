@@ -1,0 +1,21 @@
+plugins {
+    id "com.android.application"
+    id "org.jetbrains.kotlin.android"
+}
+android {
+    namespace "com.webo.tester"
+    compileSdk 34
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+    defaultConfig {
+        applicationId "com.webo.tester"
+        minSdk 30
+        targetSdk 34
+        def runNo = (System.getenv("GITHUB_RUN_NUMBER") ?: "0").toInteger()
+        versionCode 1 + runNo
+        versionName "1.0." + runNo
+    }
+}

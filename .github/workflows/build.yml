@@ -1,0 +1,37 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+      - name: Build
+        run: |
+          set +e
+          gradle assembleDebug --no-daemon --console=plain > build.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            msg=$(grep -v '^$' build.log | tail -n 35 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=GradleLog::$msg"
+          fi
+          exit $code
+      - name: Compress
+        run: |
+          command -v 7z >/dev/null || sudo apt-get install -y p7zip-full
+          cd app/build/outputs/apk/debug
+          7z a -t7z -mx=9 -m0=lzma2 -md=128m -mfb=273 -ms=on WEBO.7z app-debug.apk
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ github.run_number }}" app/build/outputs/apk/debug/WEBO.7z --title "WEBO" --notes "apk"

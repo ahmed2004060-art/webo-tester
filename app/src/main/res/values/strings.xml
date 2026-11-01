@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WEBO Tester</string>
+    <string name="svc_desc">يسمح للمختبِر بقراءة شاشة Webo والضغط على عناصرها لاختبارها وتسجيل النتائج حرفياً.</string>
+</resources>
